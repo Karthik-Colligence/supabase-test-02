@@ -3,18 +3,46 @@ name: Deploy to Supabase (TeamSync Dev)
 on:
   push:
     branches:
-      - master  # or change to your active branch
+      - master  # or your chosen branch
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+
     steps:
       - name: Checkout source code
         uses: actions/checkout@v3
 
-      - name: Install Supabase CLI
-        run: npm install -g supabase
+      # Setup Homebrew cache
+      - name: Cache Homebrew
+        id: cache-homebrew
+        uses: actions/cache@v3
+        with:
+          path: |
+            /home/linuxbrew/.linuxbrew
+            ~/.cache/Homebrew
+          key: brew-supabase-cli-${{ runner.os }}-${{ hashFiles('.github/workflows/deploy.yml') }}
+
+      - name: Install Homebrew (if not cached)
+        if: steps.cache-homebrew.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl file git
+          yes "" | bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> ~/.profile
+
+      - name: Setup Homebrew Env
+        run: |
+          echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> $GITHUB_ENV
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+
+      - name: Install Supabase CLI (if not cached)
+        if: steps.cache-homebrew.outputs.cache-hit != 'true'
+        run: |
+          brew install supabase/tap/supabase
 
       - name: Setup Supabase project reference
         run: |
@@ -23,7 +51,8 @@ jobs:
       - name: Push DB schema
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-        run: supabase db push
+        run: |
+          supabase db push
 
       - name: Inject Supabase secrets into Edge Functions
         env:
