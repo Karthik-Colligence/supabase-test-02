@@ -36,8 +36,9 @@ jobs:
 
       - name: Setup Homebrew Env
         run: |
-          echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> $GITHUB_ENV
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          echo "PATH=$PATH" >> $GITHUB_ENV
+          echo "HOMEBREW_PREFIX=$HOMEBREW_PREFIX" >> $GITHUB_ENV
 
       - name: Install Supabase CLI (if not cached)
         if: steps.cache-homebrew.outputs.cache-hit != 'true'
