@@ -68,7 +68,7 @@ jobs:
           supabase secrets set \
             NEXT_PUBLIC_SUPABASE_URL="${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}" \
             NEXT_PUBLIC_SUPABASE_ANON_KEY="${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}" \
-            SUPABASE_SERVICE_ROLE_KEY="${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
+            SERVICE_ROLE_KEY="${{ secrets.SERVICE_ROLE_KEY }}"
 
       # ✅ Deploy Edge Functions (if present)
       - name: Deploy Supabase Edge Functions (if any)
