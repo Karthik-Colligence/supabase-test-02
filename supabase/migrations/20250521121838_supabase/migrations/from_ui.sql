@@ -35,7 +35,15 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQ
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES  TO "service_role";
 
 
-
+CREATE TABLE manual_table(
+    id serial PRIMARY KEY,
+    name text NOT NULL
+);
+COMMENT ON TABLE manual_table IS 'A manually created table for testing purposes.';
+ALTER TABLE manual_table OWNER TO "pg_database_owner";
+GRANT ALL ON TABLE manual_table TO "postgres";
+GRANT ALL ON TABLE manual_table TO "anon";
+GRANT ALL ON TABLE manual_table TO "authenticated"; 
 
 
 
