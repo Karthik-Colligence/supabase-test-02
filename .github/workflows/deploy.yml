@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master  # or your chosen branch
+      - main
 
 jobs:
   deploy:
