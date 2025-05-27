@@ -86,9 +86,12 @@ jobs:
           echo "Checking for remote-only migration versions..."
           remote_versions=$(supabase migration list | grep -Eo '^[0-9]{14}' || true)
           for version in $remote_versions; do
-            if [ ! -f "./supabase/migrations/${version}"* ]; then
+            match=$(find ./supabase/migrations -type f -name "${version}_*.sql" | wc -l)
+            if [ "$match" -eq 0 ]; then
               echo "Repairing remote-only migration: $version"
               supabase migration repair --status reverted "$version"
+            else
+              echo "Migration $version already present locally."
             fi
           done
 
