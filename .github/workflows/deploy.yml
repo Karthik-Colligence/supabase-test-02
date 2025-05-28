@@ -51,50 +51,6 @@ jobs:
         run: |
           supabase link --project-ref "${{ secrets.SUPABASE_PROJECT_REF }}"
 
-      - name: Check for reverted migrations
-        id: migration_check
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
-        run: |
-          echo "Checking migration status..."
-          status=$(supabase migration list | grep -E '\[reverted\]' || true)
-          if [ -n "$status" ]; then
-            echo "Reverted migrations found:"
-            echo "$status"
-            echo "REPAIR_REQUIRED=true" >> $GITHUB_ENV
-          else
-            echo "No repairs needed."
-            echo "REPAIR_REQUIRED=false" >> $GITHUB_ENV
-          fi
-
-      - name: Auto-repair reverted migrations (if any)
-        if: env.REPAIR_REQUIRED == 'true'
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-        run: |
-          reverted=$(supabase migration list | grep -Eo '[0-9]{14}' | uniq)
-          for version in $reverted; do
-            echo "Repairing $version..."
-            supabase migration repair --status reverted "$version"
-          done
-
-      - name: Auto-repair remote-only migrations (if any)
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-        run: |
-          echo "Checking for remote-only migration versions..."
-          remote_versions=$(supabase migration list | grep -Eo '^[0-9]{14}' || true)
-          for version in $remote_versions; do
-            match=$(find ./supabase/migrations -type f -name "${version}_*.sql" | wc -l)
-            if [ "$match" -eq 0 ]; then
-              echo "Repairing remote-only migration: $version"
-              supabase migration repair --status reverted "$version"
-            else
-              echo "Migration $version already present locally."
-            fi
-          done
-
       - name: Push DB schema to Supabase
         id: push_schema
         continue-on-error: true
@@ -104,15 +60,22 @@ jobs:
         run: |
           supabase db push --password "$SUPABASE_DB_PASSWORD"
 
-      - name: Fallback - Pull remote migrations and retry push
+      - name: Repair and Retry DB Push (only if push fails)
         if: steps.push_schema.outcome == 'failure'
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
         run: |
-          echo "Push failed. Pulling remote migrations..."
-          supabase db pull
-          echo "Retrying push after pull..."
+          echo "Push failed. Checking for broken migration history..."
+          remote_versions=$(supabase migration list | grep -Eo '^[0-9]{14}' || true)
+          for version in $remote_versions; do
+            match=$(find ./supabase/migrations -type f -name "${version}_*.sql" | wc -l)
+            if [ "$match" -eq 0 ]; then
+              echo "Repairing remote-only migration: $version"
+              supabase migration repair --status reverted "$version"
+            fi
+          done
+          echo "Retrying push after repair..."
           supabase db push --password "$SUPABASE_DB_PASSWORD"
 
       - name: Log applied migrations
