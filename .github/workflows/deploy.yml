@@ -96,10 +96,23 @@ jobs:
           done
 
       - name: Push DB schema to Supabase
+        id: push_schema
+        continue-on-error: true
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
         run: |
+          supabase db push --password "$SUPABASE_DB_PASSWORD"
+
+      - name: Fallback - Pull remote migrations and retry push
+        if: steps.push_schema.outcome == 'failure'
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: |
+          echo "Push failed. Pulling remote migrations..."
+          supabase db pull
+          echo "Retrying push after pull..."
           supabase db push --password "$SUPABASE_DB_PASSWORD"
 
       - name: Log applied migrations
