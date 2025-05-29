@@ -51,8 +51,35 @@ jobs:
         run: |
           supabase link --project-ref "${{ secrets.SUPABASE_PROJECT_REF }}"
 
-      - name: Push DB schema to Supabase
-        id: push_schema
+      - name: Lint Supabase migrations
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          supabase db lint
+
+      - name: Validate seed.sql (if present)
+        run: |
+          if [[ -f supabase/seed.sql ]]; then
+            echo "Validating seed.sql..."
+            psql "postgresql://postgres:postgres@localhost:54322/postgres" -f supabase/seed.sql --echo-all || {
+              echo "Invalid SQL detected in seed.sql";
+              exit 1;
+            }
+          else
+            echo "No seed.sql found. Skipping."
+          fi
+
+      - name: Check schema creation in migrations (sanity validation)
+        run: |
+          if grep -q '"[a-zA-Z0-9_]*"\."' supabase/migrations/*.sql && ! grep -q "CREATE SCHEMA" supabase/migrations/*.sql; then
+            echo "Custom schema references found but no CREATE SCHEMA statement present. Please ensure schema is created."
+            exit 1
+          else
+            echo "Schema validation passed."
+          fi
+
+      - name: Try pushing DB schema
+        id: try_push
         continue-on-error: true
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
@@ -60,22 +87,26 @@ jobs:
         run: |
           supabase db push --password "$SUPABASE_DB_PASSWORD"
 
-      - name: Repair and Retry DB Push (only if push fails)
-        if: steps.push_schema.outcome == 'failure'
+      - name: Attempt repair and push again
+        if: steps.try_push.outcome == 'failure'
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
         run: |
-          echo "Push failed. Checking for broken migration history..."
+          echo "Push failed. Trying to repair remote migration history."
           remote_versions=$(supabase migration list | grep -Eo '^[0-9]{14}' || true)
           for version in $remote_versions; do
             match=$(find ./supabase/migrations -type f -name "${version}_*.sql" | wc -l)
             if [ "$match" -eq 0 ]; then
-              echo "Repairing remote-only migration: $version"
+              echo "Repairing: $version => reverted"
               supabase migration repair --status reverted "$version"
+              echo "Repairing: $version => applied"
+              supabase migration repair --status applied "$version"
             fi
           done
-          echo "Retrying push after repair..."
+          echo "Syncing local with remote using db pull..."
+          supabase db pull
+          echo "Retrying push..."
           supabase db push --password "$SUPABASE_DB_PASSWORD"
 
       - name: Log applied migrations
