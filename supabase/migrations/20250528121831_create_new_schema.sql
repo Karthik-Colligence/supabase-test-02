@@ -7,5 +7,7 @@ CREATE TABLE IF NOT EXISTS new_schema.user_info (
 );
 
 Insert into new_schema.user_info (id, name) values (01,'Apoorv'), (02,'No Name');
+Insert into new_schema.user_info (id, name) values (03,'Name'), (04,'New Name');
+
 
 ALTER TABLE new_schema.user_info ENABLE ROW LEVEL SECURITY;
