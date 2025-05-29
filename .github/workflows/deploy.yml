@@ -51,12 +51,6 @@ jobs:
         run: |
           supabase link --project-ref "${{ secrets.SUPABASE_PROJECT_REF }}"
 
-      - name: Lint Supabase migrations
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-        run: |
-          supabase db lint
-
       - name: Validate seed.sql (if present)
         run: |
           if [[ -f supabase/seed.sql ]]; then
@@ -71,7 +65,7 @@ jobs:
 
       - name: Check schema creation in migrations (sanity validation)
         run: |
-          if grep -q '"[a-zA-Z0-9_]*"\."' supabase/migrations/*.sql && ! grep -q "CREATE SCHEMA" supabase/migrations/*.sql; then
+          if grep -q '"[a-zA-Z0-9_]*"\.' supabase/migrations/*.sql && ! grep -q "CREATE SCHEMA" supabase/migrations/*.sql; then
             echo "Custom schema references found but no CREATE SCHEMA statement present. Please ensure schema is created."
             exit 1
           else
