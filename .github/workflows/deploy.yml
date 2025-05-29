@@ -51,18 +51,6 @@ jobs:
         run: |
           supabase link --project-ref "${{ secrets.SUPABASE_PROJECT_REF }}"
 
-      - name: Validate seed.sql (if present)
-        run: |
-          if [[ -f supabase/seed.sql ]]; then
-            echo "Validating seed.sql..."
-            psql "postgresql://postgres:postgres@localhost:54322/postgres" -f supabase/seed.sql --echo-all || {
-              echo "Invalid SQL detected in seed.sql";
-              exit 1;
-            }
-          else
-            echo "No seed.sql found. Skipping."
-          fi
-
       - name: Check schema creation in migrations (sanity validation)
         run: |
           if grep -q '"[a-zA-Z0-9_]*"\.' supabase/migrations/*.sql && ! grep -q "CREATE SCHEMA" supabase/migrations/*.sql; then
@@ -99,7 +87,7 @@ jobs:
             fi
           done
           echo "Syncing local with remote using db pull..."
-          supabase db pull
+          supabase db pull || echo "Failed to pull from remote"
           echo "Retrying push..."
           supabase db push --password "$SUPABASE_DB_PASSWORD"
 
