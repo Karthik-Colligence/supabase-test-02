@@ -53,12 +53,19 @@ jobs:
 
       - name: Check schema creation in migrations (sanity validation)
         run: |
-          if grep -q '"[a-zA-Z0-9_]*"\.' supabase/migrations/*.sql && ! grep -q "CREATE SCHEMA" supabase/migrations/*.sql; then
+          if grep -q '\"[a-zA-Z0-9_]*\"\.' supabase/migrations/*.sql && ! grep -q "CREATE SCHEMA" supabase/migrations/*.sql; then
             echo "Custom schema references found but no CREATE SCHEMA statement present. Please ensure schema is created."
             exit 1
           else
             echo "Schema validation passed."
           fi
+
+      - name: Ensure schemas exist before push
+        run: |
+          for schema in $(grep -oP '(?<=\").*?(?=\")' supabase/migrations/*.sql | grep -vE 'supabase_migrations|public' | sort -u); do
+            echo "Ensuring schema \"$schema\" exists"
+            echo "CREATE SCHEMA IF NOT EXISTS \"$schema\";" >> supabase/migrations/00000000000000_init_schema.sql
+          done
 
       - name: Try pushing DB schema
         id: try_push
