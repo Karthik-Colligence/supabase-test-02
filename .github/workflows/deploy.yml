@@ -51,6 +51,21 @@ jobs:
         run: |
           supabase link --project-ref "${{ secrets.SUPABASE_PROJECT_REF }}"
 
+      - name: Validate migration file naming format
+        run: |
+          echo "Validating migration file naming format..."
+          invalid_files=$(find supabase/migrations -name "*.sql" 2>/dev/null | grep -vE '/[0-9]{14}_[a-zA-Z0-9_]+\.sql$' || true)
+          
+          if [ -n "$invalid_files" ]; then
+            echo "❌ ERROR: Invalid migration file naming format detected:"
+            echo "$invalid_files"
+            echo "Expected format: YYYYMMDDHHMMSS_description.sql"
+            echo "Example: 20240106143022_create_users_table.sql"
+            exit 1
+          fi
+          
+          echo "✅ All migration files have valid naming format"
+
       - name: Check schema creation in migrations (sanity validation)
         run: |
           if grep -q '"[a-zA-Z0-9_]*"\.' supabase/migrations/*.sql && ! grep -q "CREATE SCHEMA" supabase/migrations/*.sql; then
