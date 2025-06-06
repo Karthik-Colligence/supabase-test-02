@@ -94,6 +94,7 @@ jobs:
           echo "Marking known deleted migrations as reverted..."
           supabase migration repair --status reverted 20250528121334 --password "$SUPABASE_DB_PASSWORD" || echo "Migration 20250528121334 already handled"
           supabase migration repair --status reverted 20250606181720 --password "$SUPABASE_DB_PASSWORD" || echo "Migration 20250606181720 already handled"
+          supabase migration repair --status reverted 20250606181721 --password "$SUPABASE_DB_PASSWORD" || echo "Migration 20250606181721 already handled"
           
           # Handle any other deleted migrations
           remote_versions=$(supabase migration list --password "$SUPABASE_DB_PASSWORD" 2>/dev/null | grep -Eo '^[0-9]{14}' || true)
@@ -124,6 +125,7 @@ jobs:
           echo "Attempting to repair known deleted migrations..."
           supabase migration repair --status reverted 20250528121334 --password "$SUPABASE_DB_PASSWORD" || echo "Migration 20250528121334 already handled"
           supabase migration repair --status reverted 20250606181720 --password "$SUPABASE_DB_PASSWORD" || echo "Migration 20250606181720 already handled"
+          supabase migration repair --status reverted 20250606181721 --password "$SUPABASE_DB_PASSWORD" || echo "Migration 20250606181721 already handled"
           
           remote_versions=$(supabase migration list --password "$SUPABASE_DB_PASSWORD" | grep -Eo '^[0-9]{14}' || true)
           for version in $remote_versions; do
