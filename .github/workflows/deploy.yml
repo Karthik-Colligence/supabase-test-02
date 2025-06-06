@@ -84,6 +84,19 @@ jobs:
             echo "CREATE SCHEMA IF NOT EXISTS \"$schema\";" >> supabase/migrations/00000000000000_init_schema.sql
           done
 
+      - name: Handle deleted migrations
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          echo "Checking for deleted migrations..."
+          remote_versions=$(supabase migration list 2>/dev/null | grep -Eo '^[0-9]{14}' || true)
+          for version in $remote_versions; do
+            if [ ! -f "./supabase/migrations/${version}_"*.sql ]; then
+              echo "Migration $version no longer exists locally - marking as reverted"
+              supabase migration repair --status reverted "$version" || true
+            fi
+          done
+
       - name: Try pushing DB schema
         id: try_push
         continue-on-error: true
@@ -104,15 +117,11 @@ jobs:
           for version in $remote_versions; do
             match=$(find ./supabase/migrations -type f -name "${version}_*.sql" | wc -l)
             if [ "$match" -eq 0 ]; then
-              echo "Repairing: $version => reverted"
+              echo "Migration $version exists on remote but not locally - marking as reverted"
               supabase migration repair --status reverted "$version"
-              echo "Repairing: $version => applied"
-              supabase migration repair --status applied "$version"
             fi
           done
-          echo "Syncing local with remote using db pull..."
-          supabase db pull || echo "Failed to pull from remote"
-          echo "Retrying push..."
+          echo "Retrying push after repairing..."
           supabase db push --include-all --password "$SUPABASE_DB_PASSWORD"
 
       - name: Log applied migrations
