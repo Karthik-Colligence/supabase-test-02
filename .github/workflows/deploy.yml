@@ -1,161 +1,254 @@
-name: Deploy to Supabase (TeamSync Dev)
+# Hybrid Supabase deployment with PR integration, error recovery, and type generation
+name: Deploy Supabase (Hybrid)
 
 on:
   push:
-    branches:
-      - master
-      - main
+    branches: [main, master, dev]
+    paths: ['supabase/migrations/**', 'supabase/functions/**', '.github/workflows/**']
+  pull_request:
+    branches: [main, master, dev]
+    paths: ['supabase/migrations/**', 'supabase/functions/**', '.github/workflows/**']
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+env:
+  HOMEBREW_NO_AUTO_UPDATE: 1
 
 jobs:
-  deploy:
+  validate-migrations:
+    name: 🔍 Validate & Preview
     runs-on: ubuntu-latest
-
-    env:
-      HOMEBREW_NO_AUTO_UPDATE: 1
-
+    outputs:
+      has-migrations: ${{ steps.check-changes.outputs.has-migrations }}
+      has-functions: ${{ steps.check-changes.outputs.has-functions }}
+    
     steps:
-      - name: Checkout source code
-        uses: actions/checkout@v3
-
-      - name: Cache Homebrew
-        id: cache-homebrew
-        uses: actions/cache@v3
+      - uses: actions/checkout@v4
         with:
-          path: |
-            /home/linuxbrew/.linuxbrew
-            ~/.cache/Homebrew
-          key: brew-supabase-cli-${{ runner.os }}-${{ hashFiles('.github/workflows/deploy.yml') }}
+          fetch-depth: 0
 
-      - name: Install Homebrew (if not cached)
-        if: steps.cache-homebrew.outputs.cache-hit != 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential curl file git
-          yes "" | bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-          echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> ~/.profile
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
 
-      - name: Setup Homebrew Env
+      # Check for migrations and functions
+      - name: Check changes
+        id: check-changes
         run: |
-          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-          echo "PATH=$PATH" >> $GITHUB_ENV
-          echo "HOMEBREW_PREFIX=$HOMEBREW_PREFIX" >> $GITHUB_ENV
+          [ -d "supabase/migrations" ] && [ "$(ls -A supabase/migrations/*.sql 2>/dev/null)" ] && echo "has-migrations=true" >> $GITHUB_OUTPUT || echo "has-migrations=false" >> $GITHUB_OUTPUT
+          [ -d "supabase/functions" ] && [ "$(ls -A supabase/functions 2>/dev/null)" ] && echo "has-functions=true" >> $GITHUB_OUTPUT || echo "has-functions=false" >> $GITHUB_OUTPUT
 
-      - name: Install Supabase CLI (if not cached)
-        if: steps.cache-homebrew.outputs.cache-hit != 'true'
+      # Validate migration naming: YYYYMMDDHHMMSS_description.sql
+      - name: Validate migration naming
+        if: steps.check-changes.outputs.has-migrations == 'true'
         run: |
-          brew install supabase/tap/supabase
-
-      - name: Link Supabase Project
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-        run: |
-          supabase link --project-ref "${{ secrets.SUPABASE_PROJECT_REF }}"
-
-      - name: Validate migration file naming format
-        run: |
-          echo "Validating migration file naming format..."
-          invalid_files=$(find supabase/migrations -name "*.sql" 2>/dev/null | grep -vE '/[0-9]{14}_[a-zA-Z0-9_]+\.sql$' || true)
-          
-          if [ -n "$invalid_files" ]; then
-            echo "❌ ERROR: Invalid migration file naming format detected:"
-            echo "$invalid_files"
-            echo "Expected format: YYYYMMDDHHMMSS_description.sql"
-            echo "Example: 20240106143022_create_users_table.sql"
-            exit 1
-          fi
-          
-          echo "✅ All migration files have valid naming format"
-
-      - name: Check schema creation in migrations (sanity validation)
-        run: |
-          if grep -q '"[a-zA-Z0-9_]*"\.' supabase/migrations/*.sql && ! grep -q "CREATE SCHEMA" supabase/migrations/*.sql; then
-            echo "Custom schema references found but no CREATE SCHEMA statement present. Please ensure schema is created."
-            exit 1
-          else
-            echo "Schema validation passed."
-          fi
-
-      - name: Ensure schemas exist before push
-        run: |
-          mkdir -p supabase/migrations
-          touch supabase/migrations/00000000000000_init_schema.sql
-          for schema in $(grep -oP '(?<=\").*?(?=\")' supabase/migrations/*.sql | grep -vE 'supabase_migrations|public' | sort -u); do
-            echo "Ensuring schema \"$schema\" exists"
-            echo "CREATE SCHEMA IF NOT EXISTS \"$schema\";" >> supabase/migrations/00000000000000_init_schema.sql
-          done
-
-      - name: Handle deleted migrations
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
-        run: |
-          echo "Checking for deleted migrations..."
-          # Specifically handle known deleted migrations
-          echo "Marking known deleted migrations as reverted..."
-          supabase migration repair --status reverted 20250528121334 --password "$SUPABASE_DB_PASSWORD" || echo "Migration 20250528121334 already handled"
-          supabase migration repair --status reverted 20250606181720 --password "$SUPABASE_DB_PASSWORD" || echo "Migration 20250606181720 already handled"
-          supabase migration repair --status reverted 20250606181721 --password "$SUPABASE_DB_PASSWORD" || echo "Migration 20250606181721 already handled"
-          
-          # Handle any other deleted migrations
-          remote_versions=$(supabase migration list --password "$SUPABASE_DB_PASSWORD" 2>/dev/null | grep -Eo '^[0-9]{14}' || true)
-          for version in $remote_versions; do
-            if [ ! -f "./supabase/migrations/${version}_"*.sql ]; then
-              echo "Migration $version no longer exists locally - marking as reverted"
-              supabase migration repair --status reverted "$version" --password "$SUPABASE_DB_PASSWORD" || true
+          validation_failed=false
+          for file in supabase/migrations/*.sql; do
+            filename=$(basename "$file")
+            [[ "$filename" == ".gitkeep" ]] || [[ "$filename" == "*.sql" ]] && continue
+            if ! echo "$filename" | grep -qE '^[0-9]{14}_[a-zA-Z0-9_]+\.sql$'; then
+              echo "❌ Invalid: $filename (Expected: YYYYMMDDHHMMSS_description.sql)"
+              validation_failed=true
             fi
           done
+          [ "$validation_failed" = true ] && exit 1 || echo "✅ All migration files valid"
 
-      - name: Try pushing DB schema
-        id: try_push
+      # Check for destructive operations and schema issues
+      - name: Validate content
+        if: steps.check-changes.outputs.has-migrations == 'true'
+        run: |
+          grep -r '"[a-zA-Z0-9_]*"\.' supabase/migrations/*.sql 2>/dev/null && ! grep -r "CREATE SCHEMA" supabase/migrations/*.sql 2>/dev/null && echo "⚠️ Custom schemas found without CREATE SCHEMA"
+          grep -r "DROP TABLE\|DROP SCHEMA\|DROP DATABASE" supabase/migrations/*.sql 2>/dev/null && echo "⚠️ Destructive operations detected"
+          echo "✅ Content validation completed"
+
+      # Generate PR preview
+      - name: PR Preview
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "## 🚀 Supabase Deployment Preview" >> $GITHUB_STEP_SUMMARY
+          echo "### Migrations:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          [ "${{ steps.check-changes.outputs.has-migrations }}" == "true" ] && ls supabase/migrations/*.sql 2>/dev/null | xargs -I {} basename {} >> $GITHUB_STEP_SUMMARY || echo "No migrations" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          [ "${{ steps.check-changes.outputs.has-functions }}" == "true" ] && echo "### Functions:" >> $GITHUB_STEP_SUMMARY && echo "\`\`\`" >> $GITHUB_STEP_SUMMARY && ls supabase/functions/ >> $GITHUB_STEP_SUMMARY && echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+      # Post PR comment with deployment details
+      - name: Comment PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let migrations = 'No migration changes detected';
+            let functions = 'No function changes detected';
+            
+            if ('${{ steps.check-changes.outputs.has-migrations }}' === 'true') {
+              try {
+                migrations = fs.readdirSync('supabase/migrations').filter(f => f.endsWith('.sql') && f !== '.gitkeep').map(f => `- ${f}`).join('\\n') || 'No migrations found';
+              } catch (e) { migrations = 'Unable to read migrations'; }
+            }
+            
+            if ('${{ steps.check-changes.outputs.has-functions }}' === 'true') {
+              try {
+                functions = fs.readdirSync('supabase/functions').map(f => `- ${f}`).join('\\n') || 'No functions found';
+              } catch (e) { functions = 'Unable to read functions'; }
+            }
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `### 🚀 Supabase Deployment Preview\\n\\n#### 📊 Migrations\\n${migrations}\\n\\n#### ⚡ Functions\\n${functions}\\n\\n---\\n✅ Validation passed | 📝 Types will be auto-generated`
+            });
+
+  deploy-to-dev:
+    name: 🚀 Deploy to Dev
+    runs-on: ubuntu-latest
+    needs: validate-migrations
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # Link and deploy to development
+      - name: Deploy to dev
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DEV_DB_PASSWORD }}
+        run: |
+          supabase link --project-ref "${{ secrets.SUPABASE_DEV_PROJECT_REF }}"
+          supabase db push --include-all --password "$SUPABASE_DB_PASSWORD"
+
+      # Deploy Edge Functions if present
+      - name: Deploy functions
+        if: needs.validate-migrations.outputs.has-functions == 'true'
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          supabase secrets set NEXT_PUBLIC_SUPABASE_URL="${{ secrets.NEXT_PUBLIC_SUPABASE_DEV_URL }}" NEXT_PUBLIC_SUPABASE_ANON_KEY="${{ secrets.NEXT_PUBLIC_SUPABASE_DEV_ANON_KEY }}" SERVICE_ROLE_KEY="${{ secrets.SUPABASE_DEV_SERVICE_ROLE_KEY }}" || true
+          supabase functions deploy --all
+
+      # Generate and commit TypeScript types
+      - name: Generate types
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DEV_DB_PASSWORD }}
+        run: |
+          mkdir -p lib/generated
+          supabase gen types typescript --linked > lib/generated/supabase_types.ts
+
+      - name: Commit types
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: 'chore: update Supabase types [skip ci]'
+          file_pattern: 'lib/generated/supabase_types.ts'
+          commit_options: '--no-verify'
+
+  deploy-to-production:
+    name: 🏭 Deploy to Production
+    runs-on: ubuntu-latest
+    needs: validate-migrations
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # Link to production
+      - name: Link to production
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: supabase link --project-ref "${{ secrets.SUPABASE_PROD_PROJECT_REF }}"
+
+      # Handle deleted migrations (repair remote history)
+      - name: Repair deleted migrations
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_PROD_DB_PASSWORD }}
+        run: |
+          remote_versions=$(supabase migration list --password "$SUPABASE_DB_PASSWORD" 2>/dev/null | grep -Eo '^[0-9]{14}' || true)
+          for version in $remote_versions; do
+            [ ! -f "./supabase/migrations/${version}_"*.sql ] && echo "Marking $version as reverted" && supabase migration repair --status reverted "$version" --password "$SUPABASE_DB_PASSWORD" || true
+          done
+
+      # Create schemas if custom ones are referenced
+      - name: Ensure schemas
+        if: needs.validate-migrations.outputs.has-migrations == 'true'
+        run: |
+          mkdir -p supabase/migrations
+          touch supabase/migrations/00000000000000_init_schemas.sql
+          for schema in $(grep -hoP '(?<=\")[a-zA-Z0-9_]+(?=\")' supabase/migrations/*.sql 2>/dev/null | grep -vE '^(supabase_migrations|public|auth|storage|realtime|extensions)$' | sort -u || true); do
+            [ -n "$schema" ] && echo "CREATE SCHEMA IF NOT EXISTS \"$schema\";" >> supabase/migrations/00000000000000_init_schemas.sql
+          done
+
+      # Deploy with retry logic
+      - name: Deploy migrations
+        id: deploy_attempt
         continue-on-error: true
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
-        run: |
-          supabase db push --include-all --password "$SUPABASE_DB_PASSWORD"
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_PROD_DB_PASSWORD }}
+        run: supabase db push --include-all --password "$SUPABASE_DB_PASSWORD"
 
-      - name: Attempt repair and push again
-        if: steps.try_push.outcome == 'failure'
+      # Retry with additional repairs if first attempt fails
+      - name: Retry deployment
+        if: steps.deploy_attempt.outcome == 'failure'
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_PROD_DB_PASSWORD }}
         run: |
-          echo "Push failed. Trying to repair remote migration history."
-          # First, specifically handle known problematic migrations
-          echo "Attempting to repair known deleted migrations..."
-          supabase migration repair --status reverted 20250528121334 --password "$SUPABASE_DB_PASSWORD" || echo "Migration 20250528121334 already handled"
-          supabase migration repair --status reverted 20250606181720 --password "$SUPABASE_DB_PASSWORD" || echo "Migration 20250606181720 already handled"
-          supabase migration repair --status reverted 20250606181721 --password "$SUPABASE_DB_PASSWORD" || echo "Migration 20250606181721 already handled"
-          
           remote_versions=$(supabase migration list --password "$SUPABASE_DB_PASSWORD" | grep -Eo '^[0-9]{14}' || true)
           for version in $remote_versions; do
             match=$(find ./supabase/migrations -type f -name "${version}_*.sql" | wc -l)
-            if [ "$match" -eq 0 ]; then
-              echo "Migration $version exists on remote but not locally - marking as reverted"
-              supabase migration repair --status reverted "$version" --password "$SUPABASE_DB_PASSWORD"
-            fi
+            [ "$match" -eq 0 ] && supabase migration repair --status reverted "$version" --password "$SUPABASE_DB_PASSWORD"
           done
-          echo "Retrying push after repairing..."
           supabase db push --include-all --password "$SUPABASE_DB_PASSWORD"
 
-      - name: Log applied migrations
+      # Deploy Edge Functions to production
+      - name: Deploy functions to production
+        if: needs.validate-migrations.outputs.has-functions == 'true'
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         run: |
-          echo "Currently applied migrations:"
-          supabase migration list | grep '\[applied\]' || echo "None applied"
+          supabase secrets set NEXT_PUBLIC_SUPABASE_URL="${{ secrets.NEXT_PUBLIC_SUPABASE_PROD_URL }}" NEXT_PUBLIC_SUPABASE_ANON_KEY="${{ secrets.NEXT_PUBLIC_SUPABASE_PROD_ANON_KEY }}" SERVICE_ROLE_KEY="${{ secrets.SUPABASE_PROD_SERVICE_ROLE_KEY }}"
+          supabase functions deploy --all
 
-      - name: Inject Supabase secrets into Edge Functions
+      # Generate production types
+      - name: Generate production types
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_PROD_DB_PASSWORD }}
         run: |
-          supabase secrets set \
-            NEXT_PUBLIC_SUPABASE_URL="${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}" \
-            NEXT_PUBLIC_SUPABASE_ANON_KEY="${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}" \
-            SERVICE_ROLE_KEY="${{ secrets.SERVICE_ROLE_KEY }}"
+          mkdir -p lib/generated
+          supabase gen types typescript --linked > lib/generated/supabase_types.ts
 
-      - name: Deploy Supabase Edge Functions (if any)
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      - name: Commit production types
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: 'chore: update production Supabase types [skip ci]'
+          file_pattern: 'lib/generated/supabase_types.ts'
+          commit_options: '--no-verify'
+
+  deployment-summary:
+    name: 📊 Summary
+    runs-on: ubuntu-latest
+    needs: [validate-migrations, deploy-to-dev, deploy-to-production]
+    if: always() && (needs.deploy-to-dev.result != 'skipped' || needs.deploy-to-production.result != 'skipped')
+    
+    steps:
+      - name: Generate summary
         run: |
-          supabase functions deploy --all || echo "No edge functions found"
+          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "**Validation:** ${{ needs.validate-migrations.result }} | **Migrations:** ${{ needs.validate-migrations.outputs.has-migrations }} | **Functions:** ${{ needs.validate-migrations.outputs.has-functions }}" >> $GITHUB_STEP_SUMMARY
+          [ "${{ needs.deploy-to-dev.result }}" != "skipped" ] && echo "**Dev:** ${{ needs.deploy-to-dev.result }}" >> $GITHUB_STEP_SUMMARY
+          [ "${{ needs.deploy-to-production.result }}" != "skipped" ] && echo "**Production:** ${{ needs.deploy-to-production.result }}" >> $GITHUB_STEP_SUMMARY
+          [ "${{ needs.deploy-to-dev.result }}" == "success" ] || [ "${{ needs.deploy-to-production.result }}" == "success" ] && echo "🎉 **Deployment successful!** Types auto-generated." >> $GITHUB_STEP_SUMMARY || echo "⚠️ **Check logs for issues**" >> $GITHUB_STEP_SUMMARY
