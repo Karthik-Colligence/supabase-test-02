@@ -117,13 +117,23 @@ jobs:
         with:
           version: latest
 
-      # Link and deploy to development
-      - name: Deploy to dev
+      # Validate secrets and link to development
+      - name: Validate secrets and deploy to dev
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DEV_DB_PASSWORD }}
+          PROJECT_REF: ${{ secrets.SUPABASE_DEV_PROJECT_REF }}
         run: |
-          supabase link --project-ref "${{ secrets.SUPABASE_DEV_PROJECT_REF }}"
+          # Validate required secrets
+          if [ -z "$PROJECT_REF" ]; then
+            echo "❌ ERROR: SUPABASE_DEV_PROJECT_REF secret is not set"
+            echo "Please add your Supabase project reference ID to GitHub secrets"
+            echo "Find it in: Supabase Dashboard → Settings → General → Reference ID"
+            exit 1
+          fi
+          echo "🔗 Linking to development project: $PROJECT_REF"
+          supabase link --project-ref "$PROJECT_REF"
+          echo "📊 Deploying migrations to development..."
           supabase db push --include-all --password "$SUPABASE_DB_PASSWORD"
 
       # Deploy Edge Functions if present
@@ -163,11 +173,21 @@ jobs:
         with:
           version: latest
 
-      # Link to production
-      - name: Link to production
+      # Validate secrets and link to production
+      - name: Validate secrets and link to production
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-        run: supabase link --project-ref "${{ secrets.SUPABASE_PROD_PROJECT_REF }}"
+          PROJECT_REF: ${{ secrets.SUPABASE_PROD_PROJECT_REF }}
+        run: |
+          # Validate required secrets
+          if [ -z "$PROJECT_REF" ]; then
+            echo "❌ ERROR: SUPABASE_PROD_PROJECT_REF secret is not set"
+            echo "Please add your Supabase project reference ID to GitHub secrets"
+            echo "Find it in: Supabase Dashboard → Settings → General → Reference ID"
+            exit 1
+          fi
+          echo "🔗 Linking to production project: $PROJECT_REF"
+          supabase link --project-ref "$PROJECT_REF"
 
       # Handle deleted migrations (repair remote history)
       - name: Repair deleted migrations
